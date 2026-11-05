@@ -179,9 +179,9 @@ td.name{text-align:left;white-space:normal;min-width:170px}
 .thumb .tb button:focus-visible{outline:2px solid var(--accent)}
 td input.cell{width:76px;padding:6px 8px;font-size:.9rem}
 td input.cell.namecell{width:200px;font-family:var(--font-ui);font-weight:400}
-input[type=text],textarea{width:100%;background:var(--surface-2);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:1rem var(--font-ui)}
+input[type=text],input[type=password],textarea{width:100%;background:var(--surface-2);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:1rem var(--font-ui)}
 textarea{font:.9rem var(--font-num);resize:vertical}
-input[type=text]:focus,textarea:focus{border-color:var(--accent)}
+input[type=text]:focus,input[type=password]:focus,textarea:focus{border-color:var(--accent)}
 .actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
 .mcards{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}
 .mcards .stat{display:flex;flex-direction:column;gap:6px;min-width:0}
@@ -561,13 +561,13 @@ function renderAudit(){
 const LS_KEY='attendance-months-v1';
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const num0=v=>{if(typeof v==='string'&&v.trim()!=='')v=Number(v);return Number.isInteger(v)&&v>=0&&v<=100000?v:null;};
-function cleanRows(arr){
+function cleanRows(arr,keepNull){
   if(!Array.isArray(arr))return [];
   return arr.filter(r=>r&&typeof r.name==='string'&&r.name.trim()).slice(0,500)
-    .map((r,i)=>({n:num0(r.n)??i+1,name:r.name.trim().slice(0,80),c:num0(r.c),a:num0(r.a),sp:num0(r.sp),cp:num0(r.cp)}));
+    .map((r,i)=>({n:num0(r.n)??(keepNull?null:i+1),name:r.name.trim().slice(0,80),c:num0(r.c),a:num0(r.a),sp:num0(r.sp),cp:num0(r.cp)}));
 }
 let months=[],mconfirm=null,sampleFn=null,sampleReady=false,maxImgs=0,imgTypes='image/jpeg,image/png,image/webp,image/gif';
-const scan={mode:'photos',files:[],label:'',busy:false,ctl:null,err:'',draft:null,paste:''};
+const scan={mode:'photos',files:[],label:'',busy:false,ctl:null,err:'',draft:null,paste:'',cache:{},progress:''};
 const PROMPT='These images are the pages of ONE printed college report titled "Cumulative Attendance Report", photographed (possibly sideways or upside down). '
  +'Each student row has: S.No, Register No, Name, then for the month Conducted Hours, Attended Hours, Attn %, then a cumulative Attn % column, then a signature. '
  +'Read EVERY student row on EVERY image in S.No order. Do not skip, merge or invent rows. '
@@ -708,21 +708,15 @@ async function rotateBlob(file,deg){
 
 function renderScan(){
   const p=$('scan-panel');if(!p)return;
-  if(sampleReady&&!sampleFn&&scan.mode==='photos')scan.mode='paste';
   let h='<div class="row-head"><div><h2>Add a month</h2><p class="muted">Bring in another month\'s printed sheet. You check every number before it is saved.</p></div>'
    +'<div class="seg" role="group" aria-label="How to add"><button type="button" data-act="mode" data-m="photos" aria-pressed="'+(scan.mode==='photos')+'">Photos</button><button type="button" data-act="mode" data-m="paste" aria-pressed="'+(scan.mode==='paste')+'">Paste rows</button></div></div>';
   if(!scan.draft){
     if(scan.mode==='photos'){
       if(!sampleReady)h+='<div class="verdict neutral">Checking whether photo reading is available…</div>';
+      else if(sampleFn)h+=photosBlock('Claude');
       else{
-        h+='<p class="hint">One photo per page of the sheet, up to '+maxImgs+'. Rotate each one so the table reads upright. The photos are sent to Claude when you press Read the sheet.</p>'
-         +'<div class="actions"><label class="btn primary picker" for="scan-files">Choose photos</label><input class="fileinput" id="scan-files" type="file" accept="'+imgTypes+'" multiple></div>';
-        if(scan.files.length){
-          h+='<div class="thumbs">'+scan.files.map((f,i)=>'<div class="thumb"><div class="pic"><img alt="Page '+(i+1)+'" src="'+f.url+'" style="transform:rotate('+f.rot+'deg)"></div>'
-           +'<div class="tb"><button type="button" data-act="rot" data-i="'+i+'" data-d="-90" aria-label="Rotate page '+(i+1)+' left">↺</button><button type="button" data-act="rot" data-i="'+i+'" data-d="90" aria-label="Rotate page '+(i+1)+' right">↻</button><button type="button" data-act="rmf" data-i="'+i+'" aria-label="Remove page '+(i+1)+'">✕</button></div></div>').join('')+'</div>';
-        }
-        h+='<div class="actions"><button type="button" class="btn primary" data-act="go" '+(scan.files.length&&!scan.busy?'':'disabled')+'>Read the sheet</button>'
-         +(scan.busy?'<button type="button" class="btn" data-act="stop">Stop</button><span class="muted">Reading the table. This can take a minute.</span>':'')+'</div>';
+        h+=geminiSetupHTML();
+        if(gem.key&&gem.model)h+=photosBlock('Gemini');
       }
     }else{
       h+='<p class="hint">One student per line: name, conducted hours, attended hours, and optionally the printed % and cumulative %. Commas or tabs both work.</p>'
@@ -733,6 +727,7 @@ function renderScan(){
   }else{
     const d=scan.draft;
     h+='<h3>Check what was read</h3><div id="draft-sum" class="verdict neutral"></div>'
+     +(d.warn&&d.warn.length?'<div class="notice">'+d.warn.map(esc).join('<br>')+'</div>':'')
      +(d.period?'<p class="hint">Period on the sheet: '+esc(d.period)+'</p>':'')
      +'<div class="table-wrap"><table><thead><tr><th>S.No</th><th>Name</th><th>Conducted</th><th>Attended</th><th>Printed %</th><th>Check</th><th></th></tr></thead><tbody>'
      +d.rows.map((r,i)=>'<tr><td class="num">'+r.n+'</td>'
@@ -777,7 +772,8 @@ function addFiles(list){
   renderScan();
 }
 async function runScan(){
-  if(!sampleFn||!scan.files.length||scan.busy)return;
+  if(!scan.files.length||scan.busy)return;
+  if(!sampleFn)return runGemini();
   scan.busy=true;scan.err='';scan.ctl=new AbortController();renderScan();
   try{
     const blobs=await Promise.all(scan.files.map(f=>rotateBlob(f.file,f.rot)));
@@ -791,6 +787,173 @@ async function runScan(){
 function clearFiles(){scan.files.forEach(f=>URL.revokeObjectURL(f.url));scan.files=[];}
 function refreshMonths(){renderMonthCards();paintStudents();}
 
+// ---------- Gemini photo reading (used when the page is not inside Claude) ----------
+const GKEY='attendance-gemini-key-v1',GMODEL='attendance-gemini-model-v1';
+const GBASE='https://generativelanguage.googleapis.com/v1beta/';
+const gem={key:'',model:'',models:[],busy:false,msg:''};
+function lsGet(k){try{return localStorage.getItem(k)||'';}catch(e){return '';}}
+function lsSet(k,v){try{if(v)localStorage.setItem(k,v);else localStorage.removeItem(k);}catch(e){}}
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const GPROMPT='This image is ONE PAGE of a printed college table titled "Cumulative Attendance Report". It may be photographed at an angle, and later pages may have no header row. '
+ +'Columns from left to right: S.No, Register No, Name of the Student, then for the month: Conducted Hours, Attended Hours, Attn %, then a second Attn % column (cumulative, a different date range), then a handwritten signature. '
+ +'Read EVERY student row visible on this page, top to bottom, and do not skip, merge or invent rows. '
+ +'Copy each number exactly as printed. Do NOT calculate, check or correct anything. '
+ +'Reply with only JSON of this shape: {"period":"text of the month date range if visible, else empty","rows":[{"n":1,"name":"AARTHI C","c":64,"a":32,"sp":50,"cp":47}]} '
+ +'where n = S.No, c = Conducted Hours, a = Attended Hours, sp = the first Attn % (month), cp = the second Attn % (cumulative). '
+ +'Use null for any value you cannot read with confidence. Keep the name exactly as printed, including a date of birth in brackets. Leave out register numbers and signatures.';
+function pickModel(ids){
+  const ok=ids.filter(id=>/^gemini-\d+(\.\d+)?-flash(-lite)?$/.test(id));
+  const ver=id=>parseFloat(id.match(/^gemini-(\d+(?:\.\d+)?)/)[1]);
+  ok.sort((x,y)=>ver(y)-ver(x)||(/lite/.test(x)-/lite/.test(y)));
+  return ok[0]||ids.find(id=>/flash/.test(id)&&!/(tts|live|image|embed|audio|native|thinking|computer|robotics)/.test(id))||ids[0]||'';
+}
+function gemErr(e){
+  if(e&&e.name==='AbortError')return '';
+  if(e&&e.http){
+    const m=(e.msg||'').toLowerCase();
+    if(e.http===400&&m.includes('api key'))return 'Gemini says this key is not valid. Copy the whole key again.';
+    if(e.http===400)return 'Gemini could not use this request: '+(e.msg||'bad request').slice(0,140);
+    if(e.http===401||e.http===403)return 'Gemini refused this key or model. Check the key, or pick another model.';
+    if(e.http===404)return 'That model was not found. Press Refresh models and pick another.';
+    if(e.http===429)return 'The free limit is used up for now. Wait a minute and try again, or try tomorrow.';
+    if(e.http>=500)return 'Gemini is busy. Try again in a minute.';
+    return 'Gemini returned error '+e.http+'.';
+  }
+  if(e&&e.empty)return 'Gemini returned nothing'+(e.reason?' ('+e.reason+')':'')+'. Try a clearer photo.';
+  if(e&&e.bad)return 'The reply could not be read as a table. Try again, or use a sharper photo.';
+  return 'Could not reach Gemini. Check your internet connection.';
+}
+async function gemFetch(path,init){
+  const headers={'x-goog-api-key':gem.key};
+  if(init&&init.body)headers['content-type']='application/json';
+  const res=await fetch(GBASE+path,Object.assign({},init,{headers}));
+  if(!res.ok){let msg='';try{msg=(await res.json()).error.message||'';}catch(e){}throw{http:res.status,msg};}
+  return res.json();
+}
+async function gemLoadModels(){
+  gem.busy=true;gem.msg='Checking the key…';renderScan();
+  try{
+    const j=await gemFetch('models?pageSize=200',{method:'GET'});
+    const ids=(j.models||[]).filter(m=>(m.supportedGenerationMethods||[]).includes('generateContent')).map(m=>String(m.name).replace(/^models\//,''));
+    gem.models=ids;
+    if(!ids.includes(gem.model)){gem.model=pickModel(ids);lsSet(GMODEL,gem.model);}
+    scan.err=gem.model?'':'No usable model was listed for this key.';
+  }catch(e){
+    if(e&&(e.http===400||e.http===401||e.http===403)){gem.key='';gem.model='';lsSet(GKEY,'');lsSet(GMODEL,'');}
+    scan.err=gemErr(e);
+  }finally{gem.busy=false;gem.msg='';renderScan();}
+}
+function gemSaveKey(){
+  const v=(($('gem-key')||{}).value||'').trim();
+  if(!/^[A-Za-z0-9_\-]{20,}$/.test(v)){scan.err='That does not look like a key. Copy the whole key from Google AI Studio, with no spaces.';renderScan();return;}
+  gem.key=v;lsSet(GKEY,v);scan.err='';gemLoadModels();
+}
+function gemPrivacy(){return '<p class="hint">Photos go to Google\'s Gemini service. On the free plan Google may use them to improve its products, so crop out the names first if that matters to you.</p>';}
+function geminiSetupHTML(){
+  if(!gem.key){
+    return '<div class="verdict neutral" style="font-weight:400"><b>One-time setup: a free Gemini key (about a minute)</b>'
+      +'<ol class="findings" style="margin-top:8px"><li>Open <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" style="color:var(--accent)">Google AI Studio</a> and sign in with a Google account.</li>'
+      +'<li>Press <b>Create API key</b> and copy it.</li><li>Paste it below. It stays in this browser only.</li></ol></div>'
+      +'<div class="fields"><div class="field full"><label for="gem-key">Gemini API key</label><input id="gem-key" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Paste the key here"></div></div>'
+      +'<div class="actions"><button type="button" class="btn primary" data-act="savekey"'+(gem.busy?' disabled':'')+'>Save key</button>'+(gem.msg?'<span class="muted">'+esc(gem.msg)+'</span>':'')+'</div>'+gemPrivacy();
+  }
+  const opts=gem.models.length?gem.models:(gem.model?[gem.model]:[]);
+  return '<div class="fields"><div class="field full"><label for="gem-model">Gemini model (key ending '+esc(gem.key.slice(-4))+')</label>'
+    +'<select id="gem-model">'+(opts.length?opts.map(m=>'<option value="'+esc(m)+'"'+(m===gem.model?' selected':'')+'>'+esc(m)+'</option>').join(''):'<option value="">Press Refresh models</option>')+'</select></div></div>'
+    +'<div class="actions"><button type="button" class="btn" data-act="testkey"'+(gem.busy?' disabled':'')+'>Refresh models</button><button type="button" class="btn" data-act="rmkey">Remove key</button>'+(gem.msg?'<span class="muted">'+esc(gem.msg)+'</span>':'')+'</div>'+gemPrivacy();
+}
+function photosBlock(provider){
+  let h='<p class="hint">One photo per page of the sheet, up to '+maxImgs+'. Rotate each one so the table reads upright. The photos are sent to '+provider+(provider==='Gemini'?' (Google)':'')+' when you press Read the sheet.</p>'
+   +'<div class="actions"><label class="btn primary picker" for="scan-files">Choose photos</label><input class="fileinput" id="scan-files" type="file" accept="'+imgTypes+'" multiple></div>';
+  if(scan.files.length){
+    h+='<div class="thumbs">'+scan.files.map((f,i)=>'<div class="thumb"><div class="pic"><img alt="Page '+(i+1)+'" src="'+f.url+'" style="transform:rotate('+f.rot+'deg)"></div>'
+     +'<div class="tb"><button type="button" data-act="rot" data-i="'+i+'" data-d="-90" aria-label="Rotate page '+(i+1)+' left">↺</button><button type="button" data-act="rot" data-i="'+i+'" data-d="90" aria-label="Rotate page '+(i+1)+' right">↻</button><button type="button" data-act="rmf" data-i="'+i+'" aria-label="Remove page '+(i+1)+'">✕</button></div></div>').join('')+'</div>';
+  }
+  h+='<div class="actions"><button type="button" class="btn primary" data-act="go" '+(scan.files.length&&!scan.busy?'':'disabled')+'>Read the sheet</button>'
+   +(scan.busy?'<button type="button" class="btn" data-act="stop">Stop</button><span class="muted">'+esc(scan.progress||'Reading the table. This can take a minute.')+'</span>':'')+'</div>';
+  return h;
+}
+async function prepJpegB64(file,deg,maxSide){
+  const d=((deg%360)+360)%360;
+  let bmp;
+  try{bmp=await createImageBitmap(file,{imageOrientation:'from-image'});}catch(e){bmp=await createImageBitmap(file);}
+  const swap=d===90||d===270;
+  const w=swap?bmp.height:bmp.width,h=swap?bmp.width:bmp.height;
+  const sc=Math.min(1,maxSide/Math.max(w,h));
+  const cv=document.createElement('canvas');cv.width=Math.max(1,Math.round(w*sc));cv.height=Math.max(1,Math.round(h*sc));
+  const x=cv.getContext('2d');
+  x.translate(cv.width/2,cv.height/2);x.rotate(d*Math.PI/180);x.scale(sc,sc);
+  x.drawImage(bmp,-bmp.width/2,-bmp.height/2);
+  const blob=await new Promise(r=>cv.toBlob(r,'image/jpeg',.9));
+  if(!blob)throw{bad:true};
+  const buf=new Uint8Array(await blob.arrayBuffer());let s='';
+  for(let i=0;i<buf.length;i+=0x8000)s+=String.fromCharCode.apply(null,buf.subarray(i,i+0x8000));
+  return btoa(s);
+}
+function parseJsonLoose(t){
+  try{return JSON.parse(t);}catch(e){}
+  const a=t.indexOf('{'),b=t.lastIndexOf('}');
+  if(a>=0&&b>a){try{return JSON.parse(t.slice(a,b+1));}catch(e){}}
+  throw{bad:true};
+}
+// join the pages, drop repeated S.No, and report anything that looks wrong
+function mergePages(all,warn){
+  const seen=new Map(),extra=[];
+  all.forEach(r=>{
+    if(r.n===null){extra.push(r);return;}
+    if(!seen.has(r.n))seen.set(r.n,r);
+    else{const o=seen.get(r.n);if(o.name!==r.name||o.c!==r.c||o.a!==r.a)warn.push('S.No '+r.n+' appears twice with different numbers. The first was kept.');}
+  });
+  const rows=[...seen.values()].sort((x,y)=>x.n-y.n);
+  const top=rows.length?rows[rows.length-1].n:0;
+  const missing=[];for(let k=1;k<=top;k++)if(!seen.has(k))missing.push(k);
+  if(missing.length)warn.push('S.No '+missing.slice(0,14).join(', ')+(missing.length>14?' and more':'')+' not found. A page may be left out or a row skipped.');
+  let nxt=top;extra.forEach(r=>{r.n=++nxt;rows.push(r);});
+  if(extra.length)warn.push(extra.length+' row'+(extra.length===1?' had':'s had')+' no S.No and were added at the end.');
+  const freq=new Map();rows.forEach(r=>{if(r.c>0)freq.set(r.c,(freq.get(r.c)||0)+1);});
+  let base=0,best=0;freq.forEach((v,k)=>{if(v>best){best=v;base=k;}});
+  const odd=rows.filter(r=>r.c!==null&&r.c>0&&r.c!==base);
+  if(odd.length&&odd.length<=6)warn.push('Different hours base from most rows ('+base+'): '+odd.map(r=>r.name+' '+r.c).join(', ')+'. Check these against the paper.');
+  return rows;
+}
+async function runGemini(){
+  if(scan.busy||!scan.files.length||!gem.key||!gem.model)return;
+  scan.busy=true;scan.err='';scan.progress='';scan.ctl=new AbortController();renderScan();
+  const all=[],warn=[];let period='',lastErr='',stopped=false;
+  try{
+    for(let i=0;i<scan.files.length&&!stopped;i++){
+      const f=scan.files[i],ck=f.file.name+'|'+f.file.size+'|'+f.rot+'|'+gem.model;
+      scan.progress='Reading page '+(i+1)+' of '+scan.files.length+'…';renderScan();
+      try{
+        let hit=scan.cache[ck];
+        if(!hit){
+          const b64=await prepJpegB64(f.file,f.rot,2200);
+          const j=await gemFetch('models/'+encodeURIComponent(gem.model)+':generateContent',{method:'POST',signal:scan.ctl.signal,
+            body:JSON.stringify({contents:[{parts:[{text:GPROMPT},{inline_data:{mime_type:'image/jpeg',data:b64}}]}],generationConfig:{temperature:0,responseMimeType:'application/json'}})});
+          const cand=j.candidates&&j.candidates[0];
+          const text=((cand&&cand.content&&cand.content.parts)||[]).map(x=>x.text||'').join('');
+          if(!text.trim())throw{empty:true,reason:(j.promptFeedback&&j.promptFeedback.blockReason)||(cand&&cand.finishReason)||''};
+          let d=parseJsonLoose(text);if(Array.isArray(d))d={rows:d};
+          const rows=cleanRows(d&&d.rows,true);
+          if(!rows.length)throw{bad:true};
+          hit={rows,per:typeof d.period==='string'?d.period.slice(0,60):''};
+          scan.cache[ck]=hit;
+          if(i<scan.files.length-1)await sleep(1200);
+        }
+        hit.rows.forEach(r=>all.push(Object.assign({},r)));
+        if(hit.per&&!period)period=hit.per;
+      }catch(e){
+        if(e&&e.name==='AbortError')throw e;
+        lastErr=gemErr(e);warn.push('Page '+(i+1)+' could not be read. '+lastErr);
+        if(e&&e.http&&e.http!==500&&e.http!==503){stopped=true;if(i<scan.files.length-1)warn.push('The remaining pages were not read.');}
+      }
+    }
+    if(!all.length)scan.err=lastErr||'Nothing could be read.';
+    else scan.draft={rows:mergePages(all,warn),period,warn};
+  }catch(e){scan.err=gemErr(e);}
+  finally{scan.busy=false;scan.ctl=null;scan.progress='';renderScan();}
+}
+
 function initMonths(){
   months=loadMonths();
   buildMonthsStatic();renderScan();refreshMonths();
@@ -801,6 +964,9 @@ function initMonths(){
     if(a==='mode'){scan.mode=b.dataset.m;scan.err='';renderScan();}
     else if(a==='rot'){scan.files[i].rot=(scan.files[i].rot+Number(b.dataset.d)+360)%360;renderScan();}
     else if(a==='rmf'){URL.revokeObjectURL(scan.files[i].url);scan.files.splice(i,1);renderScan();}
+    else if(a==='savekey')gemSaveKey();
+    else if(a==='testkey')gemLoadModels();
+    else if(a==='rmkey'){gem.key='';gem.model='';gem.models=[];lsSet(GKEY,'');lsSet(GMODEL,'');scan.err='';renderScan();}
     else if(a==='go')runScan();
     else if(a==='stop')scan.ctl&&scan.ctl.abort();
     else if(a==='paste-use'){
@@ -844,6 +1010,7 @@ function initMonths(){
   v.addEventListener('change',e=>{
     if(e.target.id==='scan-files')addFiles(e.target.files);
     else if(e.target.id==='msort')paintStudents();
+    else if(e.target.id==='gem-model'){gem.model=e.target.value;lsSet(GMODEL,gem.model);}
   });
   (async()=>{
     try{
@@ -851,6 +1018,14 @@ function initMonths(){
       if(s){const lim=await s.limits().catch(()=>null);
         if(lim&&lim.images){sampleFn=s;maxImgs=lim.images.maxCount;imgTypes=lim.images.mediaTypes.join(',');}}
     }catch(e){}
+    if(!sampleFn){
+      maxImgs=6;imgTypes='image/jpeg,image/png,image/webp';
+      gem.key=lsGet(GKEY);gem.model=lsGet(GMODEL);
+      if(gem.model)gem.models=[gem.model];
+      sampleReady=true;renderScan();
+      if(gem.key&&!gem.model)gemLoadModels();
+      return;
+    }
     sampleReady=true;renderScan();
   })();
 }

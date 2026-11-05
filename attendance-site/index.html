@@ -844,8 +844,8 @@ async function gemLoadModels(){
   }finally{gem.busy=false;gem.msg='';renderScan();}
 }
 function gemSaveKey(){
-  const v=(($('gem-key')||{}).value||'').trim();
-  if(!/^[A-Za-z0-9_\-]{20,}$/.test(v)){scan.err='That does not look like a key. Copy the whole key from Google AI Studio, with no spaces.';renderScan();return;}
+  const v=(($('gem-key')||{}).value||'').replace(/[\s"'`]/g,'');
+  if(!/^[\x21-\x7E]{20,}$/.test(v)){scan.err='That does not look like a key. Copy the whole key from Google AI Studio, with no spaces.';renderScan();return;}
   gem.key=v;lsSet(GKEY,v);scan.err='';gemLoadModels();
 }
 function gemPrivacy(){return '<p class="hint">Photos go to Google\'s Gemini service. On the free plan Google may use them to improve its products, so crop out the names first if that matters to you.</p>';}
@@ -916,6 +916,43 @@ function mergePages(all,warn){
   if(odd.length&&odd.length<=6)warn.push('Different hours base from most rows ('+base+'): '+odd.map(r=>r.name+' '+r.c).join(', ')+'. Check these against the paper.');
   return rows;
 }
+// one page: retry a busy model once, then try the next Flash model, and give up after 90 s per request
+const isUserAbort=e=>e&&e.name==='AbortError'&&scan.ctl&&scan.ctl.signal.aborted;
+function fallbackModels(){
+  const ver=id=>parseFloat(id.match(/^gemini-(\d+(?:\.\d+)?)/)[1]);
+  const ids=gem.models.filter(id=>/^gemini-\d+(\.\d+)?-flash(-lite)?$/.test(id))
+    .sort((x,y)=>ver(y)-ver(x)||(/lite/.test(x)-/lite/.test(y)));
+  return [gem.model].concat(ids.filter(i=>i!==gem.model)).slice(0,4);
+}
+async function gemCall(model,body){
+  const c=new AbortController();let timed=false;
+  const t=setTimeout(()=>{timed=true;c.abort();},90000);
+  const onAbort=()=>c.abort();
+  scan.ctl.signal.addEventListener('abort',onAbort);
+  try{return await gemFetch('models/'+encodeURIComponent(model)+':generateContent',{method:'POST',signal:c.signal,body});}
+  catch(e){if(timed)throw{http:504,msg:'timeout'};throw e;}
+  finally{clearTimeout(t);scan.ctl.signal.removeEventListener('abort',onAbort);}
+}
+async function gemGenerate(body,pageIdx,warn){
+  let lastErr=null;
+  for(const m of fallbackModels()){
+    for(let t=0;t<2;t++){
+      scan.progress='Reading page '+(pageIdx+1)+' of '+scan.files.length+' with '+m+(t?' (retrying)':'')+'…';renderScan();
+      try{
+        const j=await gemCall(m,body);
+        if(m!==gem.model)warn.push('Page '+(pageIdx+1)+' was read with '+m+' because '+gem.model+' was busy.');
+        return j;
+      }catch(e){
+        if(isUserAbort(e))throw e;
+        lastErr=e;
+        if(e&&e.http&&e.http>=500&&t===0){await sleep(4000);continue;}
+        break;
+      }
+    }
+    if(lastErr&&lastErr.http&&(lastErr.http===401||lastErr.http===403||(lastErr.http===400&&/api key/i.test(lastErr.msg||''))))break;
+  }
+  throw lastErr;
+}
 async function runGemini(){
   if(scan.busy||!scan.files.length||!gem.key||!gem.model)return;
   scan.busy=true;scan.err='';scan.progress='';scan.ctl=new AbortController();renderScan();
@@ -928,8 +965,7 @@ async function runGemini(){
         let hit=scan.cache[ck];
         if(!hit){
           const b64=await prepJpegB64(f.file,f.rot,2200);
-          const j=await gemFetch('models/'+encodeURIComponent(gem.model)+':generateContent',{method:'POST',signal:scan.ctl.signal,
-            body:JSON.stringify({contents:[{parts:[{text:GPROMPT},{inline_data:{mime_type:'image/jpeg',data:b64}}]}],generationConfig:{temperature:0,responseMimeType:'application/json'}})});
+          const j=await gemGenerate(JSON.stringify({contents:[{parts:[{text:GPROMPT},{inline_data:{mime_type:'image/jpeg',data:b64}}]}],generationConfig:{temperature:0,responseMimeType:'application/json'}}),i,warn);
           const cand=j.candidates&&j.candidates[0];
           const text=((cand&&cand.content&&cand.content.parts)||[]).map(x=>x.text||'').join('');
           if(!text.trim())throw{empty:true,reason:(j.promptFeedback&&j.promptFeedback.blockReason)||(cand&&cand.finishReason)||''};
